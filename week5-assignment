@@ -1,0 +1,130 @@
+-- ============================================
+-- PostgreSQL Performance, Transactions & PgBouncer
+-- Author: Guled Kusow
+-- ============================================
+
+-- STEP 1: CREATE THE ORDERS TABLE
+CREATE TABLE orders (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    customer_id INT,
+    amount NUMERIC(10,2),
+    status TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- INSERT 2 MILLION RECORDS
+INSERT INTO orders (customer_id, amount, status, created_at)
+SELECT
+    (random() * 50000)::int,
+    (random() * 500)::numeric(10,2),
+    (ARRAY['pending','shipped','delivered'])[ceil(random() * 3)],
+    now() - (random() * 365)::int * interval '1 day'
+FROM generate_series(1, 2000000);
+
+-- UPDATE TABLE STATISTICS
+ANALYZE orders;
+
+-- CHECK NUMBER OF ROWS
+SELECT COUNT(*) AS total_orders
+FROM orders;
+
+
+-- ============================================
+-- STEP 2: MEASURE THE SLOW QUERY
+-- ============================================
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT customer_id, SUM(amount)
+FROM orders
+WHERE status = 'pending'
+  AND created_at > now() - interval '30 days'
+GROUP BY customer_id
+ORDER BY SUM(amount) DESC
+LIMIT 10;
+
+
+-- ============================================
+-- STEP 3: CREATE TARGETED INDEX
+-- ============================================
+
+CREATE INDEX idx_pending_recent
+ON orders (created_at DESC, customer_id)
+WHERE status = 'pending';
+
+-- UPDATE STATISTICS
+ANALYZE orders;
+
+-- RUN THE QUERY AGAIN
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT customer_id, SUM(amount)
+FROM orders
+WHERE status = 'pending'
+  AND created_at > now() - interval '30 days'
+GROUP BY customer_id
+ORDER BY SUM(amount) DESC
+LIMIT 10;
+
+
+-- ============================================
+-- STEP 4: TRANSACTION ISOLATION
+-- ============================================
+
+-- Check the current value
+SELECT amount
+FROM orders
+WHERE id = 1;
+
+-- Start a transaction
+BEGIN;
+
+SELECT amount
+FROM orders
+WHERE id = 1;
+
+-- Commit the transaction
+COMMIT;
+
+
+-- Test REPEATABLE READ
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+SELECT amount
+FROM orders
+WHERE id = 1;
+
+COMMIT;
+
+
+-- ============================================
+-- STEP 5: USEFUL PGBOUNCER SETTINGS
+-- ============================================
+
+-- PgBouncer is configured separately in:
+-- /etc/pgbouncer/pgbouncer.ini
+
+-- Configuration:
+--
+-- [databases]
+-- bootcamp = host=127.0.0.1 port=5432 dbname=bootcamp
+--
+-- [pgbouncer]
+-- pool_mode = transaction
+-- max_client_conn = 1000
+-- default_pool_size = 20
+-- listen_port = 6432
+
+
+-- ============================================
+-- VERIFY THE ORDERS TABLE
+-- ============================================
+
+SELECT COUNT(*) AS total_orders
+FROM orders;
+
+SELECT status, COUNT(*) AS total
+FROM orders
+GROUP BY status;
+
+SELECT *
+FROM orders
+LIMIT 10;
